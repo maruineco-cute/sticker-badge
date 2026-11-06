@@ -600,6 +600,7 @@
     <div class="note2" id="saveNote">📱 スマホは画像を長押しでも保存できます</div>
     <a class="save" id="saveLink" download="sticker.png">💾 画像を保存</a>
     <button class="share" id="saveShare" type="button">📤 SNS・アプリへ共有</button>
+    <button class="share" id="saveOpen" type="button">🔗 別タブで開く（保存できないとき）</button>
     <button class="close" id="saveClose">とじる</button>
   </div>
 </div>
@@ -3417,7 +3418,9 @@ $('savePng').addEventListener('click', ()=>{
 document.querySelectorAll('input[name=saveSize]').forEach(r=>r.addEventListener('change',saveSettings));
 
 /* ================= 保存モーダル・共有(シールメーカーから流用) ================= */
-let shareFile=null;
+let shareFile=null, lastSaveUrl=null;
+function inFrame(){ try{ return window.top!==window.self; }catch(e){ return true; } }
+const FRAME_HINT='　⚠️ このプレビュー枠の中では保存がブロックされます。「別タブで開く」か、Chrome等で直接開いてね';
 function prepareShare(url, name){
   shareFile=null;
   if(!navigator.share){ $('saveShare').style.display='none'; return; }
@@ -3430,16 +3433,20 @@ function showSaveModal(url, name, info){
   const v=$('saveVid'); v.pause(); v.removeAttribute('src'); v.style.display='none';
   $('saveImg').style.display=''; $('saveImg').src=url;
   const l=$('saveLink'); l.href=url; l.download=name; l.textContent='💾 画像を保存';
-  $('saveNote').textContent=(info?`📐 ${info}　`:'')+'📱 スマホは画像を長押しでも保存できます';
+  lastSaveUrl=url;
+  $('saveNote').textContent=(info?`📐 ${info}　`:'')+'📱 スマホは画像を長押しでも保存できます'+(inFrame()?FRAME_HINT:'');
   prepareShare(url, name);
   $('saveModal').classList.add('show');
 }
-function showVideoModal(blob, name){
+function showVideoModal(blob, name, cfr){
   const url=URL.createObjectURL(blob);
   $('saveImg').style.display='none';
   const v=$('saveVid'); v.style.display=''; v.src=url; v.play().catch(()=>{});
   const l=$('saveLink'); l.href=url; l.download=name; l.textContent='💾 動画を保存';
-  $('saveNote').textContent='📱 うまく保存できないときは「共有」から保存してね';
+  lastSaveUrl=url;
+  $('saveNote').textContent = (cfr ? '🎬 30fps固定のMP4で書き出しました。SNSにそのまま投稿できます'
+    : name.endsWith('.mp4') ? '🎬 MP4で書き出しました（端末によっては再生が不安定なことがあります）'
+    : '📱 うまく保存できないときは「共有」から保存してね') + (inFrame()?FRAME_HINT:'');
   shareFile=new File([blob], name, {type:blob.type});
   $('saveShare').style.display=navigator.share?'':'none';
   $('saveModal').classList.add('show');
@@ -3447,6 +3454,11 @@ function showVideoModal(blob, name){
 function closeModal(){ $('saveModal').classList.remove('show'); $('saveVid').pause(); }
 $('saveClose').addEventListener('click', closeModal);
 $('saveModal').addEventListener('click', e=>{ if(e.target.id==='saveModal') closeModal(); });
+$('saveOpen').addEventListener('click', ()=>{
+  if(!lastSaveUrl) return;
+  const w=window.open(lastSaveUrl,'_blank');
+  if(!w) $('saveNote').textContent='⚠️ 別タブが開けませんでした。「共有」から保存してみてね';
+});
 $('saveShare').addEventListener('click', async ()=>{
   try{
     if(shareFile && navigator.canShare && navigator.canShare({files:[shareFile]})){
@@ -3465,7 +3477,205 @@ function pickVideoType(){
   for(const ty of types){ try{ if(MediaRecorder.isTypeSupported(ty)) return ty; }catch(e){} }
   return null;
 }
-function startRecording(){
+/* ---------- MP4書き出し(WebCodecs)：コマ落ちしない固定フレームレート ----------
+   MediaRecorderは実時間で録るのでコマ間隔がバラつき、X等で「パラパラ」になりやすい。
+   ここでは 1/30秒ごとに絵を描いてエンコードし、自前でMP4に包む(CFR)。 */
+function mstr(s){ const a=new Uint8Array(s.length); for(let i=0;i<s.length;i++) a[i]=s.charCodeAt(i); return a; }
+function mcat(list){ let n=0; for(const a of list) n+=a.length; const o=new Uint8Array(n); let p=0; for(const a of list){ o.set(a,p); p+=a.length; } return o; }
+function mu16(...v){ const a=new Uint8Array(v.length*2), d=new DataView(a.buffer); v.forEach((x,i)=>d.setUint16(i*2,x&0xffff)); return a; }
+function mu32(...v){ const a=new Uint8Array(v.length*4), d=new DataView(a.buffer); v.forEach((x,i)=>d.setUint32(i*4,x>>>0)); return a; }
+function mbox(type, ...parts){
+  const body=mcat(parts.filter(Boolean).map(x=>x instanceof Uint8Array?x:new Uint8Array(x)));
+  return mcat([mu32(8+body.length), mstr(type), body]);
+}
+const MATRIX = mu32(0x00010000,0,0, 0,0x00010000,0, 0,0,0x40000000);
+function buildMp4(samples, avcC, width, height, timescale, delta){
+  const n=samples.length;
+  const dur=Math.round(n*delta*1000/timescale);           // ムービーは1/1000秒単位
+  const ftyp=mbox('ftyp', mstr('isom'), mu32(512), mcat([mstr('isom'),mstr('iso2'),mstr('avc1'),mstr('mp41')]));
+  const avc1=mbox('avc1',
+    new Uint8Array(6), mu16(1), mu16(0), mu16(0), mu32(0,0,0),
+    mu16(width), mu16(height), mu32(0x00480000,0x00480000), mu32(0),
+    mu16(1), new Uint8Array(32), mu16(0x0018), mu16(0xffff),
+    avcC);
+  const stsd=mbox('stsd', mu32(0), mu32(1), avc1);
+  const stts=mbox('stts', mu32(0), mu32(1), mu32(n), mu32(delta));
+  const keys=[]; samples.forEach((s,i)=>{ if(s.key) keys.push(i+1); });
+  const stss=keys.length?mbox('stss', mu32(0), mu32(keys.length), mcat(keys.map(k=>mu32(k)))):null;
+  const stsc=mbox('stsc', mu32(0), mu32(1), mu32(1), mu32(1), mu32(1));
+  const stsz=mbox('stsz', mu32(0), mu32(0), mu32(n), mcat(samples.map(s=>mu32(s.data.length))));
+  const mkStco=(offs)=>mbox('stco', mu32(0), mu32(n), mcat(offs.map(o=>mu32(o))));
+  const mkMoov=(offs)=>mbox('moov',
+    mbox('mvhd', mu32(0,0,0), mu32(1000), mu32(dur), mu32(0x00010000), mu16(0x0100), mu16(0), mu32(0,0),
+      MATRIX, new Uint8Array(24), mu32(2)),
+    mbox('trak',
+      mbox('tkhd', mu32(0x00000007), mu32(0,0), mu32(1), mu32(0), mu32(dur), mu32(0,0),
+        mu16(0), mu16(0), mu16(0), mu16(0), MATRIX, mu32(width<<16), mu32(height<<16)),
+      mbox('mdia',
+        mbox('mdhd', mu32(0,0,0), mu32(timescale), mu32(n*delta), mu16(0x55c4), mu16(0)),
+        mbox('hdlr', mu32(0), mstr('vide'), mu32(0,0,0), mstr('VideoHandler\0')),
+        mbox('minf',
+          mbox('vmhd', mu32(0x00000001), mu16(0), mu16(0), mu16(0)),
+          mbox('dinf', mbox('dref', mu32(0), mu32(1), mbox('url ', mu32(0x00000001)))),
+          mbox('stbl', stsd, stts, stss, stsc, stsz, mkStco(offs))
+        )
+      )
+    )
+  );
+  const probe=mkMoov(new Array(n).fill(0));
+  const base=ftyp.length+probe.length+8;
+  const offs=[]; let o=base;
+  for(const sm of samples){ offs.push(o); o+=sm.data.length; }
+  const moov=mkMoov(offs);
+  const mdat=mbox('mdat', mcat(samples.map(sm=>sm.data)));
+  return new Blob([ftyp,moov,mdat],{type:'video/mp4'});
+}
+/* --- AnnexB(00 00 01)形式で出てくる端末(Android等)向けの変換 --- */
+function splitAnnexB(u8){
+  const out=[]; let i=0;
+  const isSC=(k)=> k+2<u8.length && u8[k]===0 && u8[k+1]===0 && (u8[k+2]===1 || (u8[k+2]===0 && k+3<u8.length && u8[k+3]===1));
+  while(i<u8.length){
+    if(!isSC(i)){ i++; continue; }
+    const sc=(u8[i+2]===1)?3:4;
+    let j=i+sc, k=j;
+    while(k<u8.length && !isSC(k)) k++;
+    if(k>j) out.push(u8.subarray(j,k));
+    i=k;
+  }
+  return out;
+}
+function avccLen(nals){
+  let len=0; for(const n of nals) len+=4+n.length;
+  const out=new Uint8Array(len); const dv=new DataView(out.buffer); let o=0;
+  for(const n of nals){ dv.setUint32(o,n.length); out.set(n,o+4); o+=4+n.length; }
+  return out;
+}
+function avcCFromSpsPps(sps,pps){
+  const out=new Uint8Array(11+sps.length+pps.length);
+  let o=0;
+  out[o++]=1; out[o++]=sps[1]; out[o++]=sps[2]; out[o++]=sps[3]; out[o++]=0xff; out[o++]=0xe1;
+  out[o++]=sps.length>>8; out[o++]=sps.length&0xff; out.set(sps,o); o+=sps.length;
+  out[o++]=1; out[o++]=pps.length>>8; out[o++]=pps.length&0xff; out.set(pps,o);
+  return out;
+}
+const MP4_CANDIDATES=[
+  {w:720,h:960,codec:'avc1.42E01E',fmt:'avc'},
+  {w:720,h:960,codec:'avc1.42E01E',fmt:'annexb'},
+  {w:720,h:960,codec:'avc1.4D401E',fmt:'avc'},
+  {w:720,h:960,codec:'avc1.4D401E',fmt:'annexb'},
+  {w:720,h:960,codec:'avc1.640028',fmt:'avc'},
+  {w:720,h:960,codec:'avc1.640028',fmt:'annexb'},
+  {w:540,h:720,codec:'avc1.42E01E',fmt:'annexb'},
+  {w:540,h:720,codec:'avc1.42E01E',fmt:'avc'},
+];
+async function tryRecordMp4(cfg){
+  if(!window.VideoEncoder || !window.VideoFrame) throw new Error('no-webcodecs');
+  const VW=cfg.w, VH=cfg.h, fps=30, us=Math.round(1e6/fps);
+  const sup=await VideoEncoder.isConfigSupported({codec:cfg.codec,width:VW,height:VH,bitrate:6e6,framerate:fps,avc:{format:cfg.fmt}});
+  if(!(sup && sup.supported)) throw new Error('unsupported '+cfg.codec+'/'+cfg.fmt);
+  const n=Math.max(1,Math.round(TL.end*fps));
+  const rc=mk(VW,VH), rx=rc.getContext('2d');
+  const raw=[]; let desc=null, err=null;
+  const enc=new VideoEncoder({
+    output:(chunk,meta)=>{
+      const buf=new Uint8Array(chunk.byteLength); chunk.copyTo(buf);
+      if(!desc && meta && meta.decoderConfig && meta.decoderConfig.description){
+        const d=meta.decoderConfig.description;
+        desc=new Uint8Array(d.byteLength!==undefined?d.byteLength:d.length); desc.set(new Uint8Array(d));
+      }
+      raw.push({data:buf, key:chunk.type==='key'});
+    },
+    error:e=>{ err=e; }
+  });
+  try{
+    enc.configure({codec:cfg.codec,width:VW,height:VH,bitrate:6e6,framerate:fps,avc:{format:cfg.fmt}});
+    for(let i=0;i<n;i++){
+      rx.setTransform(VW/W,0,0,VH/H,0,0);
+      drawScene(rx, i*us/1e6);
+      const vf=new VideoFrame(rc,{timestamp:i*us, duration:us});
+      enc.encode(vf,{keyFrame:i%(fps*2)===0});
+      vf.close();
+      if(i%6===0){
+        const st=$('status'); st.hidden=false;
+        st.textContent='🎬 動画を書き出し中… '+Math.round((i+1)/n*100)+'%';
+      }
+      if(enc.encodeQueueSize>6) await new Promise(r=>setTimeout(r,0));
+      if(err) break;
+    }
+    await enc.flush();
+  }catch(e){ err=err||e; }
+  try{ enc.close(); }catch(e){}
+  if(err) throw err;
+  if(!raw.length) throw new Error('no-frames');
+  let samples=raw, avcC=null;
+  if(cfg.fmt==='avc'){
+    if(!desc) throw new Error('no-description');
+    avcC=(desc.length>7 && desc[4]===0x61 && desc[5]===0x76 && desc[6]===0x63 && desc[7]===0x43)
+      ? desc : mbox('avcC', desc);
+  }else{
+    // AnnexB → AVCC + avcC(SPS/PPSを拾う)
+    let sps=null, pps=null;
+    samples=raw.map(sm=>{
+      const nals=splitAnnexB(sm.data), keep=[];
+      for(const nl of nals){
+        const t=nl[0]&0x1f;
+        if(t===7){ if(!sps) sps=nl; }
+        else if(t===8){ if(!pps) pps=nl; }
+        else if(t===9) { /* AUDは入れない */ }
+        else keep.push(nl);
+      }
+      return {data:avccLen(keep), key:sm.key};
+    }).filter(sm=>sm.data.length>0);
+    if(!sps || !pps) throw new Error('no-sps');
+    avcC=mbox('avcC', avcCFromSpsPps(sps,pps));
+  }
+  return buildMp4(samples, avcC, VW, VH, fps*1000, 1000);
+}
+async function recordMp4Cfr(){
+  if(!TL) return false;
+  const keep={FX_PICK, DONE_FX, confetti};
+  DONE_FX=true;
+  if(!confetti || !confetti.length) makeConfetti();
+  let blob=null, lastErr=null;
+  for(const cfg of MP4_CANDIDATES){
+    try{ blob=await tryRecordMp4(cfg); break; }
+    catch(e){ lastErr=e; console.warn('MP4候補失敗', cfg, e && e.message); }
+  }
+  FX_PICK=keep.FX_PICK; DONE_FX=keep.DONE_FX; confetti=keep.confetti;
+  const stEl=$('status'); if(stEl) stEl.hidden=true;
+  if(!blob) return false;
+  showVideoModal(blob, fileBase()+'.mp4', true);
+  return true;
+}
+async function patchMp4Duration(blob, seconds){
+  try{
+    const buf=await blob.arrayBuffer();
+    const u=new Uint8Array(buf), dv=new DataView(buf);
+    const ascii=(p)=>String.fromCharCode(u[p],u[p+1],u[p+2],u[p+3]);
+    let hit=0;
+    for(let p=4;p+8<u.length;p++){
+      const t=ascii(p);
+      if(t!=='mvhd' && t!=='mdhd' && t!=='mehd') continue;
+      const off=p+4;                       // version/flags
+      const ver=u[off];
+      if(t==='mehd'){
+        const d=Math.round(seconds*1000);    // mehdはmovie timescale(通常1000)
+        if(ver===1) dv.setUint32(off+8,0), dv.setUint32(off+12,d>>>0);
+        else dv.setUint32(off+4,d>>>0);
+        hit++; continue;
+      }
+      const tsOff=off+4+(ver===1?16:8);     // creation/modification(8 or 16)の後
+      const ts=tsOff+4<=u.length?dv.getUint32(tsOff):0;
+      if(!ts) continue;
+      const d=Math.round(seconds*ts);
+      if(ver===1){ dv.setUint32(tsOff+8,0); dv.setUint32(tsOff+12,d>>>0); }
+      else dv.setUint32(tsOff+4,d>>>0);
+      hit++;
+    }
+    return hit? new Blob([buf],{type:blob.type||'video/mp4'}) : blob;
+  }catch(e){ return blob; }
+}
+function startRecordingMR(){
   if(!TL || busy || building) return;
   const type=pickVideoType();
   if(!type){ alert('このブラウザは動画保存に未対応です🙏 画像保存をお使いください'); return; }
@@ -3479,12 +3689,15 @@ function startRecording(){
   }catch(err){ alert('録画を開始できませんでした🙏\n'+err.message); return; }
   const chunks=[];
   mr.ondataavailable=e=>{ if(e.data && e.data.size) chunks.push(e.data); };
-  mr.onstop=()=>{
+  const recStart=performance.now();
+  mr.onstop=async ()=>{
     try{ mr.stream.getTracks().forEach(tr=>tr.stop()); }catch(e){}
     setBusy(false);
     const mime=(mr.mimeType||type).split(';')[0];
     if(!chunks.length){ alert('録画に失敗しました🙏'); return; }
-    const blob=new Blob(chunks,{type:mime});
+    let blob=new Blob(chunks,{type:mime});
+    const secs=Math.max(.2,(performance.now()-recStart)/1000);
+    if(mime.includes('mp4')) blob=await patchMp4Duration(blob, secs);
     showVideoModal(blob, fileBase()+(mime.includes('mp4')?'.mp4':'.webm'));
   };
   rec={c,x,mr};
@@ -3496,6 +3709,15 @@ function stopRecording(){
   if(!rec) return;
   const r=rec; rec=null;
   try{ r.mr.stop(); }catch(e){ setBusy(false); }
+}
+async function startRecording(){
+  if(!TL || busy || building) return;
+  setBusy(true);
+  try{
+    if(await recordMp4Cfr()){ setBusy(false); return; }   // 30fps固定のMP4(X等に強い)
+  }catch(e){ console.warn('MP4書き出しに失敗→録画方式に切替', e); }
+  setBusy(false);
+  startRecordingMR();
 }
 $('saveVideo').addEventListener('click', startRecording);
 if(!pickVideoType()) $('saveVideo').style.display='none';
@@ -4215,5 +4437,5 @@ $('mockShare').addEventListener('click', async ()=>{
 });
 
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a565879b0b92fca0',t:'MTc5Mzk4MzExOA=='};var l=window.parent.location,o;try{o=new URL(l.origin).origin}catch(e){try{o=new URL(new URL(l.href).origin).origin}catch(e){o=''}}var u='/cdn-cgi/challenge-platform/scripts/jsd/main.js?ray=a565879b0b92fca0',a=document.createElement('script');a.src=o?new URL(u,o).href:u;document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</body>
 </html>
