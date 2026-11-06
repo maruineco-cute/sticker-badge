@@ -569,7 +569,6 @@
       <div class="status" id="status" hidden></div>
       <div class="btnrow">
         <button class="btn-dl" id="savePng" disabled>⬇️ 画像を保存</button>
-        <button class="btn-video" id="saveVideo" disabled>🎬 動画</button>
       </div>
       <div class="btnrow">
         <button class="btn-mock" id="mockStore" disabled>🏪 店頭</button>
@@ -602,8 +601,8 @@
     <video id="saveVid" playsinline muted loop controls style="display:none;"></video>
     <div class="note2" id="saveNote">📱 スマホは画像を長押しでも保存できます</div>
     <a class="save" id="saveLink" download="sticker.png">💾 画像を保存</a>
+    <button class="share" id="saveOpen" type="button">🔗 別タブで開いて保存（保存できないとき）</button>
     <button class="share" id="saveShare" type="button">📤 SNS・アプリへ共有</button>
-    <button class="share" id="saveOpen" type="button">🔗 別タブで開く（保存できないとき）</button>
     <button class="close" id="saveClose">とじる</button>
   </div>
 </div>
@@ -3247,7 +3246,7 @@ function updateUI(){
   $('kindNote').textContent=NOTES[k]+(n>=MAX_IMAGES?`（画像は${MAX_IMAGES}枚までです）`:'');
   $('hint').innerHTML=HINTS[k];
   const ready=!!TL && !building;
-  ['savePng','saveVideo','mockStore','mockSns','mockPhone'].forEach(id=>$(id).disabled=busy||!ready);
+  ['savePng','saveVideo','mockStore','mockSns','mockPhone'].forEach(id=>{ const b=$(id); if(b) b.disabled=busy||!ready; });
   animBtnUpdate();
   $('shuffle').disabled=busy||building||!TL||k==='badge'||(k==='puffy'&&used<2);
   $('sample').disabled=busy;
@@ -3423,6 +3422,12 @@ document.querySelectorAll('input[name=saveSize]').forEach(r=>r.addEventListener(
 /* ================= 保存モーダル・共有(シールメーカーから流用) ================= */
 let shareFile=null, lastSaveUrl=null;
 function inFrame(){ try{ return window.top!==window.self; }catch(e){ return true; } }
+// プレビュー枠の中では保存がブロックされるので「別タブで開く」を先に出す
+(function(){
+  if(!inFrame()) return;
+  const open=$('saveOpen'), link=$('saveLink');
+  if(open && link && link.parentNode) link.parentNode.insertBefore(open, link);
+})();
 const FRAME_HINT='　⚠️ このプレビュー枠の中では保存がブロックされます。「別タブで開く」か、Chrome等で直接開いてね';
 function prepareShare(url, name){
   shareFile=null;
@@ -3437,7 +3442,7 @@ function showSaveModal(url, name, info){
   $('saveImg').style.display=''; $('saveImg').src=url;
   const l=$('saveLink'); l.href=url; l.download=name; l.textContent='💾 画像を保存';
   lastSaveUrl=url;
-  $('saveNote').textContent=(info?`📐 ${info}　`:'')+'📱 スマホは画像を長押しでも保存できます'+(inFrame()?FRAME_HINT:'');
+  $('saveNote').textContent=(info?`📐 ${info}　`:'')+'📱 保存できないときは「別タブで開いて保存」から（長押しでも保存できます）'+(inFrame()?FRAME_HINT:'');
   prepareShare(url, name);
   $('saveModal').classList.add('show');
 }
@@ -3477,7 +3482,7 @@ function fileStamp(){
   return p2(d.getMonth()+1)+p2(d.getDate())+'-'+p2(d.getHours())+p2(d.getMinutes());
 }
 /* ================= バージョン表記 ================= */
-const APP_VERSION='v2.25';          // ← 変更のたびに上げる
+const APP_VERSION='v2.26';          // ← 変更のたびに上げる
 const APP_BUILD='2026-11-06T17:46:00Z';   // UTC。表示は見ている人の地域の時刻に直す
 (function(){
   const a=$('appVer');
@@ -3789,8 +3794,8 @@ async function startRecording(){
   setBusy(false);
   startRecordingMR();
 }
-$('saveVideo').addEventListener('click', startRecording);
-if(!pickVideoType()) $('saveVideo').style.display='none';
+// 動画書き出しは一旦お休み（UIから外しています）
+if($('saveVideo')) $('saveVideo').style.display='none';
 
 /* ================= サンプル画像(シールメーカーから流用) ================= */
 // ---- サンプル:アイス(サーティワン風の丸いスクープ) ----
