@@ -327,6 +327,9 @@
     .hint{max-width:320px;}
     .wrap{padding:6px 12px 32px; gap:12px;}
   }
+  /* バージョン表記は一番下だけ・控えめに(メニューを開いたら隠す) */
+  #appVer{text-align:center; color:#c6ccd4; font-size:.68rem; letter-spacing:.02em; margin:2px 0 14px; user-select:none;}
+  body.lock #appVer{display:none;}
   /* ---- メニューを開いたとき:プレビューが見えるように ---- */
   @media (min-width:781px){
     body.lock .wrap{padding-right:376px;}
@@ -589,7 +592,7 @@
     <div class="hint" id="hint">
       <b>画像アップ → 袋にIN → 完成！</b>　商品名も色も後から変えられます
     </div>
-    <div style="text-align:center; color:#cbbcd2; font-size:.68rem; margin:4px 0 14px;">v2</div>
+    <div id="appVer">v--</div>
   </div>
 </div>
 
@@ -3468,6 +3471,14 @@ $('saveShare').addEventListener('click', async ()=>{
     }
   }catch(e){ /* 共有キャンセル時など:何もしない */ }
 });
+
+/* ================= バージョン表記 ================= */
+const APP_VERSION='v2.22';          // ← 変更のたびに上げる
+const APP_BUILD='2026-11-07 17:45';
+(function(){
+  const a=$('appVer');
+  if(a) a.textContent=APP_VERSION+' · '+APP_BUILD;
+})();
 
 /* ================= 動画で保存(アニメをそのまま録画) ================= */
 function pickVideoType(){
