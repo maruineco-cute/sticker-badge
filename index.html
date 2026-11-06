@@ -3472,12 +3472,22 @@ $('saveShare').addEventListener('click', async ()=>{
   }catch(e){ /* 共有キャンセル時など:何もしない */ }
 });
 
+function fileStamp(){
+  const d=new Date(), p2=n=>String(n).padStart(2,'0');
+  return p2(d.getMonth()+1)+p2(d.getDate())+'-'+p2(d.getHours())+p2(d.getMinutes());
+}
 /* ================= バージョン表記 ================= */
-const APP_VERSION='v2.22';          // ← 変更のたびに上げる
-const APP_BUILD='2026-11-07 17:45';
+const APP_VERSION='v2.25';          // ← 変更のたびに上げる
+const APP_BUILD='2026-11-06T17:46:00Z';   // UTC。表示は見ている人の地域の時刻に直す
 (function(){
   const a=$('appVer');
-  if(a) a.textContent=APP_VERSION+' · '+APP_BUILD;
+  if(a){
+    const d=new Date(APP_BUILD);
+    const p2=n=>String(n).padStart(2,'0');
+    const t=isNaN(d)?APP_BUILD
+      :`${d.getFullYear()}/${p2(d.getMonth()+1)}/${p2(d.getDate())}`;
+    a.textContent=APP_VERSION+' · '+t;
+  }
 })();
 
 /* ================= 動画で保存(アニメをそのまま録画) ================= */
@@ -3500,9 +3510,34 @@ function mbox(type, ...parts){
   return mcat([mu32(8+body.length), mstr(type), body]);
 }
 const MATRIX = mu32(0x00010000,0,0, 0,0x00010000,0, 0,0,0x40000000);
-function buildMp4(samples, avcC, width, height, timescale, delta){
+const SILENT_AAC=new Uint8Array([0x01,0x18,0x20,0x07]);   // 無音AAC-LC 1フレーム(1024サンプル)
+const AAC_ASC=new Uint8Array([0x12,0x08]);                 // 44100Hz / モノラル / LC
+const A_RATE=44100, A_FRAME=1024;
+function desc(tag, payload){
+  // MPEG-4のディスクリプタ(タグ+可変長サイズ)
+  const len=payload.length;
+  let head;
+  if(len<128) head=new Uint8Array([tag,len]);
+  else if(len<16384) head=new Uint8Array([tag,0x80|(len>>7),len&0x7f]);
+  else head=new Uint8Array([tag,0x80|(len>>14),0x80|((len>>7)&0x7f),len&0x7f]);
+  return mcat([head,payload]);
+}
+function esdsBox(){
+  const dsi=desc(0x05,AAC_ASC);
+  const dcd=desc(0x04, mcat([
+    new Uint8Array([0x40,0x15]), mu16(0), new Uint8Array([0,0,0,0]),   // bufferSizeDB(u24)
+    mu32(32000,32000), dsi
+  ]));
+  const sl=desc(0x06,new Uint8Array([0x02]));
+  const es=desc(0x03, mcat([mu16(0), new Uint8Array([0]), dcd, sl]));
+  return mbox('esds', mu32(0), es);
+}
+function buildMp4(samples, avcC, width, height, timescale, delta, withAudio){
   const n=samples.length;
-  const dur=Math.round(n*delta*1000/timescale);           // ムービーは1/1000秒単位
+  const vDur=Math.round(n*delta*1000/timescale);            // ムービー(1/1000秒)
+  const aN = withAudio ? Math.max(1, Math.round(n*delta/timescale*A_RATE/A_FRAME)) : 0;
+  const aDurMs = Math.round(aN*A_FRAME*1000/A_RATE);
+  const dur=Math.max(vDur,aDurMs);
   const ftyp=mbox('ftyp', mstr('isom'), mu32(512), mcat([mstr('isom'),mstr('iso2'),mstr('avc1'),mstr('mp41')]));
   const avc1=mbox('avc1',
     new Uint8Array(6), mu16(1), mu16(0), mu16(0), mu32(0,0,0),
@@ -3515,10 +3550,17 @@ function buildMp4(samples, avcC, width, height, timescale, delta){
   const stss=keys.length?mbox('stss', mu32(0), mu32(keys.length), mcat(keys.map(k=>mu32(k)))):null;
   const stsc=mbox('stsc', mu32(0), mu32(1), mu32(1), mu32(1), mu32(1));
   const stsz=mbox('stsz', mu32(0), mu32(0), mu32(n), mcat(samples.map(s=>mu32(s.data.length))));
-  const mkStco=(offs)=>mbox('stco', mu32(0), mu32(n), mcat(offs.map(o=>mu32(o))));
-  const mkMoov=(offs)=>mbox('moov',
+  const mkStco=(offs)=>mbox('stco', mu32(0), mu32(offs.length), mcat(offs.map(o=>mu32(o))));
+  const mp4a=mbox('mp4a',
+    new Uint8Array(6), mu16(1), mu32(0,0), mu16(1), mu16(16), mu16(0), mu16(0),
+    mu32(A_RATE<<16), esdsBox());
+  const aStsd=mbox('stsd', mu32(0), mu32(1), mp4a);
+  const aStts=mbox('stts', mu32(0), mu32(1), mu32(aN), mu32(A_FRAME));
+  const aStsz=mbox('stsz', mu32(0), mu32(0), mu32(aN), mcat(new Array(aN).fill(mu32(SILENT_AAC.length))));
+  const aStsc=mbox('stsc', mu32(0), mu32(1), mu32(1), mu32(1), mu32(1));
+  const mkMoov=(vOffs,aOffs)=>mbox('moov',
     mbox('mvhd', mu32(0,0,0), mu32(1000), mu32(dur), mu32(0x00010000), mu16(0x0100), mu16(0), mu32(0,0),
-      MATRIX, new Uint8Array(24), mu32(2)),
+      MATRIX, new Uint8Array(24), mu32(withAudio?3:2)),
     mbox('trak',
       mbox('tkhd', mu32(0x00000007), mu32(0,0), mu32(1), mu32(0), mu32(dur), mu32(0,0),
         mu16(0), mu16(0), mu16(0), mu16(0), MATRIX, mu32(width<<16), mu32(height<<16)),
@@ -3528,17 +3570,34 @@ function buildMp4(samples, avcC, width, height, timescale, delta){
         mbox('minf',
           mbox('vmhd', mu32(0x00000001), mu16(0), mu16(0), mu16(0)),
           mbox('dinf', mbox('dref', mu32(0), mu32(1), mbox('url ', mu32(0x00000001)))),
-          mbox('stbl', stsd, stts, stss, stsc, stsz, mkStco(offs))
+          mbox('stbl', stsd, stts, stss, stsc, stsz, mkStco(vOffs))
         )
       )
-    )
+    ),
+    withAudio? mbox('trak',
+      mbox('tkhd', mu32(0x00000007), mu32(0,0), mu32(2), mu32(0), mu32(dur), mu32(0,0),
+        mu16(0), mu16(0), mu16(0x0100), mu16(0), MATRIX, mu32(0), mu32(0)),
+      mbox('mdia',
+        mbox('mdhd', mu32(0,0,0), mu32(A_RATE), mu32(aN*A_FRAME), mu16(0x55c4), mu16(0)),
+        mbox('hdlr', mu32(0), mstr('soun'), mu32(0,0,0), mstr('SoundHandler\0')),
+        mbox('minf',
+          mbox('smhd', mu32(0), mu16(0), mu16(0)),
+          mbox('dinf', mbox('dref', mu32(0), mu32(1), mbox('url ', mu32(0x00000001)))),
+          mbox('stbl', aStsd, aStts, aStsc, aStsz, mkStco(aOffs))
+        )
+      )
+    ) : null
   );
-  const probe=mkMoov(new Array(n).fill(0));
+  const probe=mkMoov(new Array(n).fill(0), new Array(aN).fill(0));
   const base=ftyp.length+probe.length+8;
-  const offs=[]; let o=base;
-  for(const sm of samples){ offs.push(o); o+=sm.data.length; }
-  const moov=mkMoov(offs);
-  const mdat=mbox('mdat', mcat(samples.map(sm=>sm.data)));
+  const vOffs=[]; let o=base;
+  for(const sm of samples){ vOffs.push(o); o+=sm.data.length; }
+  const aOffs=[];
+  if(withAudio){ for(let i=0;i<aN;i++){ aOffs.push(o); o+=SILENT_AAC.length; } }
+  const moov=mkMoov(vOffs,aOffs);
+  const parts=[ftyp,moov];
+  const body=mcat([mcat(samples.map(sm=>sm.data)), withAudio? mcat(new Array(aN).fill(SILENT_AAC)) : new Uint8Array(0)]);
+  const mdat=mbox('mdat', body);
   return new Blob([ftyp,moov,mdat],{type:'video/mp4'});
 }
 /* --- AnnexB(00 00 01)形式で出てくる端末(Android等)向けの変換 --- */
@@ -3640,7 +3699,7 @@ async function tryRecordMp4(cfg){
     if(!sps || !pps) throw new Error('no-sps');
     avcC=mbox('avcC', avcCFromSpsPps(sps,pps));
   }
-  return buildMp4(samples, avcC, VW, VH, fps*1000, 1000);
+  return buildMp4(samples, avcC, VW, VH, fps*1000, 1000, true);   // 無音のAACトラックも入れる(SNS側の相性対策)
 }
 async function recordMp4Cfr(){
   if(!TL) return false;
@@ -3655,7 +3714,7 @@ async function recordMp4Cfr(){
   FX_PICK=keep.FX_PICK; DONE_FX=keep.DONE_FX; confetti=keep.confetti;
   const stEl=$('status'); if(stEl) stEl.hidden=true;
   if(!blob) return false;
-  showVideoModal(blob, fileBase()+'.mp4', true);
+  showVideoModal(blob, fileBase()+'_'+fileStamp()+'.mp4', true);
   return true;
 }
 async function patchMp4Duration(blob, seconds){
