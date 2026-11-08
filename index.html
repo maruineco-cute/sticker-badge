@@ -2800,6 +2800,8 @@ function drawTape(g,t,tp){
 }
 // 帯そのもの(原点=帯の中心で描く)
 function tapeBandDraw(g,wid,h,col,ink,txt){
+  g.save();
+  g.beginPath(); g.rect(-wid/2,-h/2,wid,h); g.clip();   // 帯からはみ出させない
   g.fillStyle=col; g.fillRect(-wid/2,-h/2,wid,h);
   // 上下の縁:斜めのしま模様(警戒テープ風)
   g.save(); g.globalAlpha=.32; g.fillStyle=ink;
@@ -2826,6 +2828,7 @@ function tapeBandDraw(g,wid,h,col,ink,txt){
     starPath(g, x+tw*.74, 0, h*.19); g.fillStyle=ink; g.fill();
     g.restore();
   }
+  g.restore();
 }
 // 巻き取ったテープのロール
 function drawTapeFx(g,t){
@@ -3868,8 +3871,8 @@ function fileStamp(){
   return p2(d.getMonth()+1)+p2(d.getDate())+'-'+p2(d.getHours())+p2(d.getMinutes());
 }
 /* ================= バージョン表記 ================= */
-const APP_VERSION='v2.33';          // ← 変更のたびに上げる
-const APP_BUILD='2026-11-08T02:19:10Z';   // UTC。表示は見ている人の地域の時刻に直す
+const APP_VERSION='v2.34';          // ← 変更のたびに上げる
+const APP_BUILD='2026-11-08T02:38:36Z';   // UTC。表示は見ている人の地域の時刻に直す
 (function(){
   const a=$('appVer');
   if(a){
@@ -4898,5 +4901,5 @@ $('mockShare').addEventListener('click', async ()=>{
 });
 
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a57119353b51d401',t:'MTc5NDEwNDQyNQ=='};var l=window.parent.location,o;try{o=new URL(l.origin).origin}catch(e){try{o=new URL(new URL(l.href).origin).origin}catch(e){o=''}}var u='/cdn-cgi/challenge-platform/scripts/jsd/main.js?ray=a57119353b51d401',a=document.createElement('script');a.src=o?new URL(u,o).href:u;document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</body>
 </html>
